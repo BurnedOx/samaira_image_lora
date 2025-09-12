@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# Import Hugging Face Hub for authentication
+from huggingface_hub import login
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -24,6 +27,7 @@ from diffusers import (
     FluxPipeline,
     UNet2DConditionModel,
 )
+from diffusers.models.transformers import Transformer2DModel
 from diffusers.optimization import get_scheduler
 from diffusers.utils import logging as diffusers_logging
 
@@ -207,11 +211,12 @@ def main():
     device = torch.device(training_config["training"]["device"])
     logger.info(f"Using device: {device}")
     
-    # Load tokenizer
+    # Load tokenizer with authentication
     tokenizer = CLIPTokenizer.from_pretrained(
         training_config["model"]["pretrained_model_name_or_path"],
         subfolder="tokenizer",
         revision=training_config["model"]["revision"],
+        token=True,  # Use authenticated access
     )
     
     # Create dataset and dataloader
@@ -219,9 +224,9 @@ def main():
         image_paths=image_paths,
         captions=captions,
         tokenizer=tokenizer,
-        size=dataset_config["resolution"],
-        center_crop=dataset_config["center_crop"],
-        random_flip=dataset_config["random_flip"],
+        size=dataset_config["dataset"]["resolution"],
+        center_crop=dataset_config["dataset"]["center_crop"],
+        random_flip=dataset_config["dataset"]["random_flip"],
     )
     
     dataloader = DataLoader(
@@ -235,32 +240,32 @@ def main():
     # Load models
     logger.info("Loading models...")
     
-    # Load VAE
-    vae = AutoencoderKL.from_pretrained(
+    # Note: VAE and text encoder are now loaded through the FLUX pipeline
+    
+    # Load FLUX pipeline and extract components
+    logger.info("Loading FLUX pipeline...")
+    pipe_kwargs = {
+        "revision": training_config["model"]["revision"],
+        "token": True,  # Use authenticated access
+    }
+    
+    pipe = FluxPipeline.from_pretrained(
         training_config["model"]["pretrained_model_name_or_path"],
-        subfolder="vae",
-        revision=training_config["model"]["revision"],
-        variant=training_config["model"]["variant"],
+        **pipe_kwargs
     )
+    
+    # Extract components from the pipeline
+    vae = pipe.vae
+    text_encoder = pipe.text_encoder
+    unet = pipe.transformer  # FLUX uses Transformer2DModel instead of UNet2DConditionModel
+    
+    # Move to device and set dtype
     vae.to(device, dtype=torch.float16)
     vae.requires_grad_(False)
     
-    # Load text encoder
-    text_encoder = CLIPTextModel.from_pretrained(
-        training_config["model"]["pretrained_model_name_or_path"],
-        subfolder="text_encoder",
-        revision=training_config["model"]["revision"],
-        variant=training_config["model"]["variant"],
-    )
     text_encoder.to(device, dtype=torch.float16)
     
-    # Load UNet
-    unet = UNet2DConditionModel.from_pretrained(
-        training_config["model"]["pretrained_model_name_or_path"],
-        subfolder="unet",
-        revision=training_config["model"]["revision"],
-        variant=training_config["model"]["variant"],
-    )
+    unet.to(device, dtype=torch.float16)
     unet.to(device, dtype=torch.float16)
     
     # Create LoRA configuration
@@ -292,10 +297,11 @@ def main():
         num_training_steps=num_training_steps,
     )
     
-    # Setup noise scheduler
+    # Setup noise scheduler with authentication
     noise_scheduler = DDPMScheduler.from_pretrained(
         training_config["model"]["pretrained_model_name_or_path"],
         subfolder="scheduler",
+        token=True,  # Use authenticated access
     )
     
     # Training loop
@@ -335,11 +341,11 @@ def main():
             # Encode images to latent space
             with torch.no_grad():
                 latents = vae.encode(pixel_values).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
+                latents = latents * vae.config.get("scaling_factor")
             
             # Sample noise
             noise = torch.randn_like(latents)
-            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (latents.shape[0],), device=device)
+            timesteps = torch.randint(0, noise_scheduler.config.get("num_train_timesteps"), (latents.shape[0],), device=device)
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
             
             # Forward pass

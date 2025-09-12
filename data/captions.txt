@@ -1,23 +1,23 @@
 # Format: image_filename: caption
 # Add your 20 image filenames and their corresponding captions here
 
-image_001.webp: a photo of [your_subject]
-image_002.webp: a photo of [your_subject]
-image_003.webp: a photo of [your_subject]
-image_004.webp: a photo of [your_subject]
-image_005.webp: a photo of [your_subject]
-image_006.webp: a photo of [your_subject]
-image_007.webp: a photo of [your_subject]
-image_008.webp: a photo of [your_subject]
-image_009.webp: a photo of [your_subject]
-image_010.webp: a photo of [your_subject]
-image_011.webp: a photo of [your_subject]
-image_012.webp: a photo of [your_subject]
-image_013.webp: a photo of [your_subject]
-image_014.webp: a photo of [your_subject]
-image_015.webp: a photo of [your_subject]
-image_016.webp: a photo of [your_subject]
-image_017.webp: a photo of [your_subject]
-image_018.webp: a photo of [your_subject]
-image_019.webp: a photo of [your_subject]
-image_020.webp: a photo of [your_subject]
+image_001.jpg: a photo of mamaplugxs in bikini
+image_002.jpg: a photo of mamaplugxs sitting on bed behind a vas
+image_003.jpg: a photo of mamaplugxs taking selfie in bikini
+image_004.jpg: a photo of mamaplugxs in an event
+image_005.jpg: a photo of mamaplugxs behind a window
+image_006.jpg: a photo of mamaplugxs face closeup
+image_007.jpg: a photo of mamaplugxs holding an award
+image_008.jpg: a photo of mamaplugxs back wearing a costume
+image_009.jpg: a photo of mamaplugxs sitting
+image_010.jpeg: a photo of mamaplugxs infront of her car
+image_011.jpeg: a photo of mamaplugxs in christmas bikini
+image_012.jpeg: a photo of mamaplugxs in her bedroom
+image_013.webp: a photo of mamaplugxs in seductive mode
+image_014.webp: a photo of mamaplugxs wearing sunglasses
+image_015.webp: a photo of mamaplugxs in bikini
+image_016.webp: a photo of mamaplugxs in pirate costume
+image_017.webp: a photo of mamaplugxs holding an award
+image_018.webp: a photo of mamaplugxs infront of her car
+image_019.jpg: a photo of mamaplugxs in a one-piece dress
+image_020.webp: a photo of mamaplugxs showing her back

@@ -1,7 +1,7 @@
 # Dataset Configuration for LoRA Fine-tuning
 
 dataset:
-  name: "custom_lora_dataset"
+  name: "mamaplugxs"
   path: "data/images"
   
   # Image preprocessing settings
@@ -19,11 +19,11 @@ dataset:
   caption_file: "data/captions.txt"
   
   # Training prompts
-  prompt_template: "a photo of {subject}"
-  instance_prompt: "a photo of [your_subject]"
+  prompt_template: "a photo of mamaplugxs {subject}"
+  instance_prompt: "a photo of mamaplugxs [your_subject]"
   
   # Validation settings
-  validation_prompt: "a photo of [your_subject]"
+  validation_prompt: "a photo of mamaplugxs [your_subject]"
   num_validation_images: 4
   validation_steps: 100
   
