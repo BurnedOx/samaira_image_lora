@@ -1,0 +1,23 @@
+# Format: image_filename: caption
+# Add your 20 image filenames and their corresponding captions here
+
+image_001.webp: a photo of [your_subject]
+image_002.webp: a photo of [your_subject]
+image_003.webp: a photo of [your_subject]
+image_004.webp: a photo of [your_subject]
+image_005.webp: a photo of [your_subject]
+image_006.webp: a photo of [your_subject]
+image_007.webp: a photo of [your_subject]
+image_008.webp: a photo of [your_subject]
+image_009.webp: a photo of [your_subject]
+image_010.webp: a photo of [your_subject]
+image_011.webp: a photo of [your_subject]
+image_012.webp: a photo of [your_subject]
+image_013.webp: a photo of [your_subject]
+image_014.webp: a photo of [your_subject]
+image_015.webp: a photo of [your_subject]
+image_016.webp: a photo of [your_subject]
+image_017.webp: a photo of [your_subject]
+image_018.webp: a photo of [your_subject]
+image_019.webp: a photo of [your_subject]
+image_020.webp: a photo of [your_subject]

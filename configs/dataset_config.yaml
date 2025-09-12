@@ -1,0 +1,32 @@
+# Dataset Configuration for LoRA Fine-tuning
+
+dataset:
+  name: "custom_lora_dataset"
+  path: "data/images"
+  
+  # Image preprocessing settings
+  image_size: 512
+  center_crop: true
+  random_flip: true
+  
+  # Dataset settings
+  resolution: 512
+  batch_size: 1
+  num_workers: 4
+  
+  # Caption settings
+  caption_column: "text"
+  caption_file: "data/captions.txt"
+  
+  # Training prompts
+  prompt_template: "a photo of {subject}"
+  instance_prompt: "a photo of [your_subject]"
+  
+  # Validation settings
+  validation_prompt: "a photo of [your_subject]"
+  num_validation_images: 4
+  validation_steps: 100
+  
+  # Dataset statistics
+  num_images: 20
+  train_test_split: 0.9
