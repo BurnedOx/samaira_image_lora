@@ -409,22 +409,42 @@ def main():
     # Check if we should use CPU offloading
     use_cpu_offload = training_config["optimization"].get("cpu_offloading", True)
     
+    # Determine the best data type based on hardware support
+    mixed_precision = training_config["training"]["mixed_precision"]
+    if mixed_precision == "bf16" and torch.cuda.is_bf16_supported():
+        logger.info("Using bfloat16 for better memory efficiency")
+        torch_dtype = torch.bfloat16
+        variant = "bf16"
+    elif mixed_precision == "bf16":
+        logger.warning("bfloat16 not supported, falling back to float16")
+        torch_dtype = torch.float16
+        variant = "fp16"
+    else:
+        logger.info("Using float16 precision")
+        torch_dtype = torch.float16
+        variant = "fp16"
+    
     # Memory-efficient loading parameters
     pipe_kwargs = {
         "revision": training_config["model"]["revision"],
         "token": True,  # Use authenticated access
-        "variant": "fp16" if training_config["training"]["mixed_precision"] == "fp16" else None,
-        "torch_dtype": torch.float16 if training_config["training"]["mixed_precision"] == "fp16" else torch.float32,
+        "variant": variant,
+        "torch_dtype": torch_dtype,
     }
     
     # Add memory-saving options
     if use_cpu_offload:
         logger.info("Enabling CPU offloading for memory efficiency...")
-        pipe_kwargs["device_map"] = "auto"
+        # Use "balanced" instead of "auto" as it's supported
+        pipe_kwargs["device_map"] = "balanced"
         pipe_kwargs["low_cpu_mem_usage"] = True
+        # Add more aggressive memory saving options
+        pipe_kwargs["max_memory"] = {0: "10GiB", "cpu": "20GiB"}  # Limit GPU memory usage
     
     # Load pipeline with memory optimizations
     try:
+        # First attempt with aggressive memory optimization
+        logger.info("Attempting to load FLUX pipeline with aggressive memory optimization...")
         pipe = FluxPipeline.from_pretrained(
             training_config["model"]["pretrained_model_name_or_path"],
             **pipe_kwargs
@@ -448,17 +468,114 @@ def main():
         fallback_kwargs = {
             "revision": training_config["model"]["revision"],
             "token": True,
-            "torch_dtype": torch.float16,
+            "torch_dtype": torch_dtype,
             "low_cpu_mem_usage": True,
         }
         
-        pipe = FluxPipeline.from_pretrained(
-            training_config["model"]["pretrained_model_name_or_path"],
-            **fallback_kwargs
-        )
-        
-        # Apply minimal optimizations
-        pipe.enable_attention_slicing()
+        try:
+            pipe = FluxPipeline.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                **fallback_kwargs
+            )
+            
+            # Apply minimal optimizations
+            pipe.enable_attention_slicing()
+            pipe.enable_sequential_cpu_offload()
+            
+        except Exception as e2:
+            logger.error(f"Still failed with minimal settings: {e2}")
+            logger.info("Attempting ultra-minimal loading approach...")
+            
+            # Ultra-minimal approach: load components individually
+            clear_gpu_memory()
+            
+            # Load only the essential components directly
+            from diffusers import FluxTransformer2DModel, AutoencoderKL
+            from transformers import CLIPTextModel, T5EncoderModel
+            
+            # Load transformer (UNet equivalent) with CPU offloading
+            logger.info("Loading transformer with CPU offloading...")
+            unet = FluxTransformer2DModel.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="transformer",
+                torch_dtype=torch_dtype,
+                revision=training_config["model"]["revision"],
+                token=True,
+                low_cpu_mem_usage=True,
+            ).to("cpu")  # Keep on CPU initially
+            
+            # Load VAE
+            logger.info("Loading VAE...")
+            vae = AutoencoderKL.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="vae",
+                torch_dtype=torch_dtype,
+                revision=training_config["model"]["revision"],
+                token=True,
+                low_cpu_mem_usage=True,
+            ).to("cpu")
+            
+            # Load text encoders
+            logger.info("Loading text encoders...")
+            text_encoder = CLIPTextModel.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="text_encoder",
+                torch_dtype=torch_dtype,
+                revision=training_config["model"]["revision"],
+                token=True,
+                low_cpu_mem_usage=True,
+            ).to("cpu")
+            
+            # Create a minimal pipeline with pre-loaded components
+            logger.info("Creating minimal pipeline...")
+            pipe = FluxPipeline(
+                vae=vae,
+                text_encoder=text_encoder,
+                tokenizer=None,  # Will add later
+                text_encoder_2=None,  # Will add later
+                tokenizer_2=None,  # Will add later
+                transformer=unet,
+                scheduler=None,  # Will add later
+            )
+            
+            # Add the remaining components
+            from transformers import CLIPTokenizer, T5TokenizerFast
+            from diffusers import FlowMatchEulerDiscreteScheduler
+            
+            pipe.tokenizer = CLIPTokenizer.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="tokenizer",
+                revision=training_config["model"]["revision"],
+                token=True,
+            )
+            
+            pipe.tokenizer_2 = T5TokenizerFast.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="tokenizer_2",
+                revision=training_config["model"]["revision"],
+                token=True,
+            )
+            
+            pipe.text_encoder_2 = T5EncoderModel.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="text_encoder_2",
+                torch_dtype=torch_dtype,
+                revision=training_config["model"]["revision"],
+                token=True,
+                low_cpu_mem_usage=True,
+            ).to("cpu")
+            
+            pipe.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                training_config["model"]["pretrained_model_name_or_path"],
+                subfolder="scheduler",
+                token=True,
+            )
+            
+            # Apply optimizations
+            pipe.enable_sequential_cpu_offload()
+            pipe.enable_attention_slicing()
+            
+            logger.info("Ultra-minimal loading completed successfully")
     
     # Log memory after pipeline loading
     log_memory_usage("after pipeline loading")
@@ -480,29 +597,57 @@ def main():
     
     logger.info("Moving components to device with memory optimization...")
     
-    # Move VAE to device with memory optimization
-    vae.to(device, dtype=torch.float16)
-    vae.requires_grad_(False)
-    
-    # Move text encoder to device
-    text_encoder.to(device, dtype=torch.float16)
-    
-    # Clear memory before moving UNet (largest component)
-    clear_gpu_memory()
-    
-    # Move UNet to device in stages if needed
-    try:
-        unet.to(device, dtype=torch.float16)
-    except RuntimeError as e:
-        if "out of memory" in str(e).lower():
-            logger.warning("UNet too large for GPU, attempting sequential loading...")
-            # Try to move components sequentially
-            for name, module in unet.named_children():
-                logger.info(f"Moving {name} to GPU...")
-                module.to(device, dtype=torch.float16)
-                clear_gpu_memory()
-        else:
-            raise e
+    # Check if components are already on the correct device
+    if vae.device != device:
+        # Move VAE to device with memory optimization
+        try:
+            vae.to(device, dtype=torch_dtype)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                logger.warning("VAE too large for GPU, keeping on CPU with offloading...")
+                # Keep VAE on CPU and use CPU offloading during inference
+                vae.to("cpu", dtype=torch_dtype)
+            else:
+                raise e
+        vae.requires_grad_(False)
+        
+        # Move text encoder to device
+        if text_encoder.device != device:
+            try:
+                text_encoder.to(device, dtype=torch_dtype)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.warning("Text encoder too large for GPU, keeping on CPU with offloading...")
+                    text_encoder.to("cpu", dtype=torch_dtype)
+                else:
+                    raise e
+        
+        # Clear memory before moving UNet (largest component)
+        clear_gpu_memory()
+        
+        # Move UNet to device in stages if needed
+        if unet.device != device:
+            try:
+                unet.to(device, dtype=torch_dtype)
+                logger.info("UNet successfully moved to GPU")
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.warning("UNet too large for GPU, attempting sequential loading...")
+                    # Try to move components sequentially
+                    for name, module in unet.named_children():
+                        logger.info(f"Moving {name} to GPU...")
+                        try:
+                            module.to(device, dtype=torch_dtype)
+                        except RuntimeError:
+                            logger.warning(f"Could not move {name} to GPU, keeping on CPU...")
+                            module.to("cpu", dtype=torch_dtype)
+                        clear_gpu_memory()
+                    
+                    # If UNet is still too large, keep it on CPU
+                    if unet.device != device:
+                        logger.warning("UNet partially on CPU, training will be slower but should work")
+                else:
+                    raise e
     
     # Apply quantization if enabled
     logger.info("Applying quantization to model components...")

@@ -39,7 +39,7 @@ training:
   max_grad_norm: 1.0
   
   # Mixed precision training
-  mixed_precision: "fp16"
+  mixed_precision: "bf16"  # More memory-efficient than fp16
   
   # Checkpointing
   checkpointing_steps: 1000  # Increased to reduce frequency of checkpoint creation
@@ -77,8 +77,8 @@ optimization:
   train_batch_size: 1
   gradient_accumulation_steps: 4
   
-  # Precision settings
-  mixed_precision: "fp16"
+  # Precision settings - use bfloat16 if supported for better memory efficiency
+  mixed_precision: "bf16"  # More memory-efficient than fp16
   
   # Memory saving techniques
   gradient_checkpointing: true
