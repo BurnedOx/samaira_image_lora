@@ -93,6 +93,12 @@ optimization:
   # Additional memory optimization for checkpoint creation
   checkpoint_memory_optimization: true
   force_checkpoint_cpu_offload: true
+  
+  # Model quantization settings
+  quantization:
+    enabled: true
+    bits: 8  # Use 8-bit quantization
+    device: "cuda"  # Quantize on device
 
 # Logging and monitoring
 logging:

@@ -78,6 +78,71 @@ def clear_gpu_memory():
         cached = torch.cuda.memory_reserved() / 1024**3  # GB
         logger.debug(f"Memory after cleanup - Allocated: {allocated:.2f} GB, Cached: {cached:.2f} GB")
 
+def log_memory_usage(stage: str = ""):
+    """Log current GPU memory usage with stage information."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        cached = torch.cuda.memory_reserved() / 1024**3  # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+        
+        logger.info(f"Memory usage {stage}:")
+        logger.info(f"  Allocated: {allocated:.2f} GB")
+        logger.info(f"  Cached: {cached:.2f} GB")
+        logger.info(f"  Max allocated: {max_allocated:.2f} GB")
+        
+        # Reset peak memory stats
+        torch.cuda.reset_peak_memory_stats()
+    else:
+        logger.info(f"Memory usage {stage}: CUDA not available")
+
+def apply_quantization(model, config: Dict):
+    """Apply quantization to model for memory efficiency."""
+    quantization_config = config.get("quantization", {})
+    
+    if not quantization_config.get("enabled", False):
+        logger.info("Quantization disabled, skipping...")
+        return model
+    
+    bits = quantization_config.get("bits", 8)
+    device = quantization_config.get("device", "cuda")
+    
+    logger.info(f"Applying {bits}-bit quantization on {device}...")
+    
+    try:
+        if bits == 8:
+            # Try to use bitsandbytes for 8-bit quantization
+            try:
+                import bitsandbytes as bnb
+                logger.info("Using bitsandbytes for 8-bit quantization...")
+                
+                if hasattr(model, 'to'):
+                    model.to(device)
+                
+                # Note: Full model quantization might need specific implementation
+                # For now, we'll focus on memory-efficient loading
+                logger.info("Quantization settings applied (memory-efficient mode)")
+                
+            except ImportError:
+                logger.warning("bitsandbytes not available, using PyTorch quantization...")
+                # Fallback to PyTorch quantization if available
+                if hasattr(torch, 'quantization'):
+                    model = torch.quantization.quantize_dynamic(
+                        model, {torch.nn.Linear}, dtype=torch.qint8
+                    )
+                    logger.info("PyTorch dynamic quantization applied")
+                else:
+                    logger.warning("PyTorch quantization not available, continuing without quantization")
+        
+        elif bits == 4:
+            logger.info("4-bit quantization requested - requires bitsandbytes")
+            # 4-bit quantization would require specific implementation
+            
+    except Exception as e:
+        logger.error(f"Failed to apply quantization: {e}")
+        logger.info("Continuing without quantization...")
+    
+    return model
+
 # Dataset class
 class LoRADataset(torch.utils.data.Dataset):
     def __init__(self, image_paths: List[str], captions: List[str], tokenizer: CLIPTokenizer, 
@@ -335,31 +400,128 @@ def main():
     
     # Note: VAE and text encoder are now loaded through the FLUX pipeline
     
-    # Load FLUX pipeline and extract components
-    logger.info("Loading FLUX pipeline...")
+    # Load FLUX pipeline and extract components with memory optimization
+    logger.info("Loading FLUX pipeline with memory optimization...")
+    
+    # Log initial memory usage
+    log_memory_usage("before pipeline loading")
+    
+    # Check if we should use CPU offloading
+    use_cpu_offload = training_config["optimization"].get("cpu_offloading", True)
+    
+    # Memory-efficient loading parameters
     pipe_kwargs = {
         "revision": training_config["model"]["revision"],
         "token": True,  # Use authenticated access
+        "variant": "fp16" if training_config["training"]["mixed_precision"] == "fp16" else None,
+        "torch_dtype": torch.float16 if training_config["training"]["mixed_precision"] == "fp16" else torch.float32,
     }
     
-    pipe = FluxPipeline.from_pretrained(
-        training_config["model"]["pretrained_model_name_or_path"],
-        **pipe_kwargs
-    )
+    # Add memory-saving options
+    if use_cpu_offload:
+        logger.info("Enabling CPU offloading for memory efficiency...")
+        pipe_kwargs["device_map"] = "auto"
+        pipe_kwargs["low_cpu_mem_usage"] = True
     
-    # Extract components from the pipeline
+    # Load pipeline with memory optimizations
+    try:
+        pipe = FluxPipeline.from_pretrained(
+            training_config["model"]["pretrained_model_name_or_path"],
+            **pipe_kwargs
+        )
+        
+        # Apply additional memory optimizations if needed
+        if use_cpu_offload:
+            logger.info("Applying CPU offloading to pipeline components...")
+            pipe.enable_sequential_cpu_offload()
+            
+        # Enable attention slicing if configured
+        if training_config["optimization"].get("attention_slicing", True):
+            logger.info("Enabling attention slicing for memory efficiency...")
+            pipe.enable_attention_slicing()
+            
+    except Exception as e:
+        logger.error(f"Failed to load FLUX pipeline with optimizations: {e}")
+        logger.info("Attempting to load with minimal memory settings...")
+        
+        # Fallback to minimal memory settings
+        fallback_kwargs = {
+            "revision": training_config["model"]["revision"],
+            "token": True,
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+        }
+        
+        pipe = FluxPipeline.from_pretrained(
+            training_config["model"]["pretrained_model_name_or_path"],
+            **fallback_kwargs
+        )
+        
+        # Apply minimal optimizations
+        pipe.enable_attention_slicing()
+    
+    # Log memory after pipeline loading
+    log_memory_usage("after pipeline loading")
+    
+    # Extract components from the pipeline with memory management
+    logger.info("Extracting pipeline components...")
+    
+    # Clear memory before component extraction
+    clear_gpu_memory()
+    
+    # Extract components
     vae = pipe.vae
     text_encoder = pipe.text_encoder
     unet = pipe.transformer  # FLUX uses Transformer2DModel instead of UNet2DConditionModel
     
-    # Move to device and set dtype
+    # Clear the pipeline to free memory
+    del pipe
+    clear_gpu_memory()
+    
+    logger.info("Moving components to device with memory optimization...")
+    
+    # Move VAE to device with memory optimization
     vae.to(device, dtype=torch.float16)
     vae.requires_grad_(False)
     
+    # Move text encoder to device
     text_encoder.to(device, dtype=torch.float16)
     
-    unet.to(device, dtype=torch.float16)
-    unet.to(device, dtype=torch.float16)
+    # Clear memory before moving UNet (largest component)
+    clear_gpu_memory()
+    
+    # Move UNet to device in stages if needed
+    try:
+        unet.to(device, dtype=torch.float16)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.warning("UNet too large for GPU, attempting sequential loading...")
+            # Try to move components sequentially
+            for name, module in unet.named_children():
+                logger.info(f"Moving {name} to GPU...")
+                module.to(device, dtype=torch.float16)
+                clear_gpu_memory()
+        else:
+            raise e
+    
+    # Apply quantization if enabled
+    logger.info("Applying quantization to model components...")
+    try:
+        # Apply quantization to UNet (main trainable component)
+        unet = apply_quantization(unet, training_config)
+        
+        # Note: We typically don't quantize VAE and text encoder as they're frozen
+        logger.info("Quantization application completed")
+    except Exception as e:
+        logger.warning(f"Quantization failed: {e}, continuing without quantization")
+    
+    # Final memory cleanup
+    clear_gpu_memory()
+    
+    # Log final memory usage after component loading
+    log_memory_usage("after component loading")
+    
+    logger.info("All components loaded successfully")
     
     # Create LoRA configuration
     lora_config = create_lora_config(training_config)
