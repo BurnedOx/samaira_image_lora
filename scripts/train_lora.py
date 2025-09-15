@@ -599,28 +599,60 @@ def main():
     
     # Check if components are already on the correct device
     if vae.device != device:
+        # Function to safely move meta tensors to device
+        def safe_move_to_device(model, device, dtype):
+            """Safely move model to device, handling meta tensors properly."""
+            try:
+                # Check if the model contains meta tensors
+                is_meta = False
+                for param in model.parameters():
+                    if param.is_meta:
+                        is_meta = True
+                        break
+                
+                if is_meta:
+                    logger.info("Model contains meta tensors, using to_empty()...")
+                    # First move to empty state on target device
+                    model = model.to_empty(device=device)
+                    # Then initialize the weights
+                    if hasattr(model, 'init_weights'):
+                        model.init_weights()
+                    else:
+                        # For models without explicit init_weights method
+                        for module in model.modules():
+                            if hasattr(module, 'reset_parameters'):
+                                module.reset_parameters()
+                    # Finally set the correct dtype
+                    model = model.to(dtype=dtype)
+                else:
+                    # Normal movement for non-meta tensors
+                    model = model.to(device, dtype=dtype)
+                
+                return model
+                
+            except Exception as e:
+                logger.error(f"Error moving model to device: {e}")
+                # Fallback to CPU
+                logger.warning("Falling back to CPU...")
+                return model.to("cpu", dtype=dtype)
+        
         # Move VAE to device with memory optimization
         try:
-            vae.to(device, dtype=torch_dtype)
-        except RuntimeError as e:
-            if "out of memory" in str(e).lower():
-                logger.warning("VAE too large for GPU, keeping on CPU with offloading...")
-                # Keep VAE on CPU and use CPU offloading during inference
-                vae.to("cpu", dtype=torch_dtype)
-            else:
-                raise e
+            vae = safe_move_to_device(vae, device, torch_dtype)
+        except Exception as e:
+            logger.error(f"Failed to move VAE: {e}")
+            logger.info("Keeping VAE on CPU...")
+            vae = vae.to("cpu", dtype=torch_dtype)
         vae.requires_grad_(False)
         
         # Move text encoder to device
         if text_encoder.device != device:
             try:
-                text_encoder.to(device, dtype=torch_dtype)
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
-                    logger.warning("Text encoder too large for GPU, keeping on CPU with offloading...")
-                    text_encoder.to("cpu", dtype=torch_dtype)
-                else:
-                    raise e
+                text_encoder = safe_move_to_device(text_encoder, device, torch_dtype)
+            except Exception as e:
+                logger.error(f"Failed to move text encoder: {e}")
+                logger.info("Keeping text encoder on CPU...")
+                text_encoder = text_encoder.to("cpu", dtype=torch_dtype)
         
         # Clear memory before moving UNet (largest component)
         clear_gpu_memory()
@@ -628,19 +660,19 @@ def main():
         # Move UNet to device in stages if needed
         if unet.device != device:
             try:
-                unet.to(device, dtype=torch_dtype)
+                unet = safe_move_to_device(unet, device, torch_dtype)
                 logger.info("UNet successfully moved to GPU")
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower():
+            except Exception as e:
+                if "out of memory" in str(e).lower() or "meta" in str(e).lower():
                     logger.warning("UNet too large for GPU, attempting sequential loading...")
                     # Try to move components sequentially
                     for name, module in unet.named_children():
                         logger.info(f"Moving {name} to GPU...")
                         try:
-                            module.to(device, dtype=torch_dtype)
-                        except RuntimeError:
+                            module = safe_move_to_device(module, device, torch_dtype)
+                        except Exception:
                             logger.warning(f"Could not move {name} to GPU, keeping on CPU...")
-                            module.to("cpu", dtype=torch_dtype)
+                            module = module.to("cpu", dtype=torch_dtype)
                         clear_gpu_memory()
                     
                     # If UNet is still too large, keep it on CPU
