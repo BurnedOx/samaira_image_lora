@@ -539,7 +539,7 @@ def main():
             )
             
             # Add the remaining components
-            from transformers import CLIPTokenizer, T5TokenizerFast
+            from transformers import T5TokenizerFast
             from diffusers import FlowMatchEulerDiscreteScheduler
             
             pipe.tokenizer = CLIPTokenizer.from_pretrained(
