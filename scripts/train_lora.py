@@ -670,9 +670,11 @@ def main():
                         logger.info(f"Moving {name} to GPU...")
                         try:
                             module = safe_move_to_device(module, device, torch_dtype)
-                        except Exception:
-                            logger.warning(f"Could not move {name} to GPU, keeping on CPU...")
-                            module = module.to("cpu", dtype=torch_dtype)
+                        except Exception as e:
+                            logger.warning(f"Could not move {name} to GPU: {e}")
+                            logger.info(f"Keeping {name} on CPU with proper meta tensor handling...")
+                            # Use safe_move_to_device for CPU as well to handle meta tensors
+                            module = safe_move_to_device(module, "cpu", torch_dtype)
                         clear_gpu_memory()
                     
                     # If UNet is still too large, keep it on CPU
