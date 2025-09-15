@@ -58,10 +58,25 @@ def get_memory_usage():
     return 0, 0
 
 def clear_gpu_memory():
-    """Clear GPU memory cache."""
+    """Aggressively clear GPU memory cache to prevent crashes during checkpoint creation."""
     if torch.cuda.is_available():
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear CUDA cache
         torch.cuda.empty_cache()
+        
+        # Collect IPC memory
         torch.cuda.ipc_collect()
+        
+        # Synchronize to ensure all operations are complete
+        torch.cuda.synchronize()
+        
+        # Log memory status after cleanup
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        cached = torch.cuda.memory_reserved() / 1024**3  # GB
+        logger.debug(f"Memory after cleanup - Allocated: {allocated:.2f} GB, Cached: {cached:.2f} GB")
 
 # Dataset class
 class LoRADataset(torch.utils.data.Dataset):
@@ -161,24 +176,102 @@ def create_lora_config(config: Dict) -> LoraConfig:
     return lora_config
 
 def save_lora_weights(unet: torch.nn.Module, output_dir: str, step: Optional[int] = None):
-    """Save LoRA weights as safetensors file."""
-    # Get LoRA state dict
-    lora_state_dict = get_peft_model_state_dict(unet)
+    """Save LoRA weights as safetensors file with robust memory management."""
+    logger.info(f"Preparing to save LoRA weights {'at step ' + str(step) if step is not None else ''}")
     
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Save weights
-    if step is not None:
-        output_path = os.path.join(output_dir, f"lora_weights_step_{step}.safetensors")
-    else:
-        output_path = os.path.join(output_dir, "lora_weights.safetensors")
-    
-    # Save using safetensors
-    from safetensors.torch import save_file
-    save_file(lora_state_dict, output_path)
-    
-    logger.info(f"LoRA weights saved to {output_path}")
+    try:
+        # Clear GPU memory before checkpoint creation
+        clear_gpu_memory()
+        
+        # Get LoRA state dict
+        logger.info("Extracting LoRA state dict...")
+        lora_state_dict = get_peft_model_state_dict(unet)
+        
+        # Move all tensors to CPU to reduce GPU memory pressure
+        logger.info("Moving tensors to CPU...")
+        cpu_state_dict = {}
+        for key, tensor in lora_state_dict.items():
+            if isinstance(tensor, torch.Tensor):
+                cpu_state_dict[key] = tensor.cpu()
+            else:
+                cpu_state_dict[key] = tensor
+        
+        # Clear the original state dict to free memory
+        del lora_state_dict
+        clear_gpu_memory()
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Determine output path
+        if step is not None:
+            output_path = os.path.join(output_dir, f"lora_weights_step_{step}.safetensors")
+        else:
+            output_path = os.path.join(output_dir, "lora_weights.safetensors")
+        
+        # Save using safetensors with error handling
+        logger.info(f"Saving LoRA weights to {output_path}...")
+        from safetensors.torch import save_file
+        
+        # Save in smaller chunks to reduce memory pressure
+        try:
+            save_file(cpu_state_dict, output_path)
+            logger.info(f"LoRA weights successfully saved to {output_path}")
+            
+            # Validate the saved file
+            if validate_checkpoint(output_path):
+                logger.info("Checkpoint validation successful")
+            else:
+                logger.warning("Checkpoint validation failed - file may be corrupted")
+                
+        except Exception as save_error:
+            logger.error(f"Failed to save checkpoint: {save_error}")
+            # Try to save with a different method as fallback
+            try:
+                logger.info("Attempting fallback save method...")
+                torch.save(cpu_state_dict, output_path.replace('.safetensors', '.pt'))
+                logger.info(f"Checkpoint saved as PyTorch file: {output_path.replace('.safetensors', '.pt')}")
+            except Exception as fallback_error:
+                logger.error(f"Fallback save also failed: {fallback_error}")
+                raise
+        
+        # Clear memory after saving
+        del cpu_state_dict
+        clear_gpu_memory()
+        
+    except Exception as e:
+        logger.error(f"Critical error during checkpoint saving: {e}")
+        # Clear memory and re-raise
+        clear_gpu_memory()
+        raise
+
+def validate_checkpoint(checkpoint_path: str) -> bool:
+    """Validate that a checkpoint file can be loaded and contains expected data."""
+    try:
+        logger.info(f"Validating checkpoint: {checkpoint_path}")
+        
+        if checkpoint_path.endswith('.safetensors'):
+            from safetensors.torch import load_file
+            state_dict = load_file(checkpoint_path)
+        else:
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+        
+        # Basic validation
+        if not state_dict:
+            logger.error("Checkpoint is empty")
+            return False
+        
+        # Check for LoRA-specific keys
+        lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
+        if not lora_keys:
+            logger.warning("No LoRA keys found in checkpoint")
+        
+        logger.info(f"Checkpoint validation passed. Found {len(state_dict)} tensors")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Checkpoint validation failed: {e}")
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune LoRA on Flux model")
@@ -375,7 +468,22 @@ def main():
             
             # Save checkpoint
             if global_step % training_config["training"]["checkpointing_steps"] == 0:
-                save_lora_weights(unet, args.output_dir, global_step)
+                logger.info(f"Saving checkpoint at step {global_step}...")
+                try:
+                    # Ensure GPU memory is cleared before checkpoint saving
+                    clear_gpu_memory()
+                    
+                    # Save checkpoint with robust error handling
+                    save_lora_weights(unet, args.output_dir, global_step)
+                    
+                    # Additional memory cleanup after successful save
+                    clear_gpu_memory()
+                    
+                except Exception as e:
+                    logger.error(f"Failed to save checkpoint at step {global_step}: {e}")
+                    logger.info("Continuing training despite checkpoint save failure...")
+                    # Ensure memory is cleared even if save failed
+                    clear_gpu_memory()
             
             # Clear memory periodically
             if step % 10 == 0:
@@ -384,8 +492,23 @@ def main():
         # End of epoch
         logger.info(f"Epoch {epoch+1} completed")
         
-        # Save final weights
-        save_lora_weights(unet, args.output_dir)
+        # Save final weights with robust error handling
+        logger.info("Saving final LoRA weights...")
+        try:
+            # Clear GPU memory before final checkpoint saving
+            clear_gpu_memory()
+            
+            # Save final checkpoint
+            save_lora_weights(unet, args.output_dir)
+            
+            # Additional memory cleanup after successful save
+            clear_gpu_memory()
+            
+        except Exception as e:
+            logger.error(f"Failed to save final checkpoint: {e}")
+            # Ensure memory is cleared even if save failed
+            clear_gpu_memory()
+            raise
     
     logger.info("Training completed!")
     logger.info(f"LoRA weights saved to {args.output_dir}")

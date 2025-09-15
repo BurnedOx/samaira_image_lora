@@ -42,8 +42,8 @@ training:
   mixed_precision: "fp16"
   
   # Checkpointing
-  checkpointing_steps: 500
-  checkpoints_total_limit: 3
+  checkpointing_steps: 1000  # Increased to reduce frequency of checkpoint creation
+  checkpoints_total_limit: 2  # Reduced to limit disk usage and memory pressure
   
   # Validation
   validation_steps: 100
@@ -85,10 +85,14 @@ optimization:
   enable_xformers_memory_efficient_attention: true
   
   # CPU offloading if needed
-  cpu_offloading: false
+  cpu_offloading: true  # Enabled to reduce GPU memory pressure
   
   # Attention slicing for memory efficiency
   attention_slicing: true
+  
+  # Additional memory optimization for checkpoint creation
+  checkpoint_memory_optimization: true
+  force_checkpoint_cpu_offload: true
 
 # Logging and monitoring
 logging:
